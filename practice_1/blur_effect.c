@@ -162,6 +162,7 @@ void boxBlur(int *scl, int *tcl, int r,int threadId){
 	int w = img.width, h = img.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
+
 		*(tcl + i) = aux;
 	}
 	boxBlurH(tcl, scl, r, threadId);
@@ -206,4 +207,4 @@ int main(int argc, char *argv[]){
 	imageFree(&img);
 	return 0;
 }
-// gcc -Wall blur_effect.c -o blur -lpthread -lm
+	// gcc -Wall blur_effect.c -o blur -lpthread -lm

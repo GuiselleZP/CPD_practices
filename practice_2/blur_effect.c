@@ -1,3 +1,4 @@
+#include "omp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -114,18 +115,11 @@ void boxesForGauss(double *sizes){
 		*(sizes + i) = (i < m ? wl : wu);
 }
 
-void boxBlurT(int *scl, int *tcl, int r, int threadId){
-	int initIteration,endIteration,
-		w = img.width,h = img.height,
+void boxBlurT(int *scl, int *tcl, int r){
+	int	w = img.width,h = img.height,
 		i, j, k, y;
-
-	initIteration = (h / THREADS) * threadId;
-	if(threadId == (THREADS - 1))
-		endIteration = h;
-	else
-		endIteration = (h / THREADS)*(threadId + 1);
-	
-	for(i = initIteration; i < endIteration; i++)
+	#pragma omp for
+	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
 			for(k = (i - r); k < (i + r + 1); k++){
@@ -136,19 +130,13 @@ void boxBlurT(int *scl, int *tcl, int r, int threadId){
 		}
 }
 
-void boxBlurH(int *scl, int *tcl, int r, int threadId){
-	int initIteration, endIteration,
-		w = img.width, h = img.height,
+void boxBlurH(int *scl, int *tcl, int r){
+	int	w = img.width, h = img.height,
 		i, j, k, x;
 
-	initIteration = (w / THREADS) * threadId;
-	if(threadId == (THREADS - 1))
-		endIteration = w;
-	else
-		endIteration = (w / THREADS)*(threadId + 1);
-		
+	#pragma omp for
 	for(i = 0; i < h; i++)
-		for(j = initIteration; j < endIteration; j++){
+		for(j = 0; j < w; j++){
 			int val = 0;
 			for(k = (j - r); k < (j + r + 1); k ++){
 				x = min(w - 1, max(0, k));
@@ -158,49 +146,43 @@ void boxBlurH(int *scl, int *tcl, int r, int threadId){
 		}
 }
 
-void boxBlur(int *scl, int *tcl, int r,int threadId){
+void boxBlur(int *scl, int *tcl, int r){
 	int w = img.width, h = img.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
 		*(tcl + i) = aux;
 	}
-	boxBlurH(tcl, scl, r, threadId);
-	boxBlurT(scl, tcl, r, threadId);
+	boxBlurH(tcl, scl, r);
+	boxBlurT(scl, tcl, r);
 }
 
-void gaussBlur_3(int *scl, int *tcl, int threadId){
+void gaussBlur_3(int *scl, int *tcl){
 	double *bxs = (double*)malloc(sizeof(double)*CHANNELS);
 	boxesForGauss(bxs);
-	boxBlur(scl, tcl, (int)((*(bxs)-1)/2), threadId);
-	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2), threadId);
-	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2), threadId);
+	boxBlur(scl, tcl, (int)((*(bxs)-1)/2));
+	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2));
+	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2));
 }
 
-void parallel(void *arg){
+void parallel(){
 	const Image *orig = &img;
-	int threadId = *(int *)arg,	i;
+	int i;
 
     ON_ERROR_EXIT(!(orig->allocation_ != NO_ALLOCATION && orig->channels >= 3), 
 			"The input image must have at least 3 channels.");
 	for(i = 0; i < CHANNELS; i++)
-		gaussBlur_3(img.rgb[i], img.targetsRGB[i], threadId);
+		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
 
 int main(int argc, char *argv[]){
 	ON_ERROR_EXIT(argc < 5, "time ./blr imgInp.jpg imgOut.jpg kernel threads");
 	THREADS = atoi(argv[4]);
-	int kernel = atoi(argv[3]),
-		threadId[THREADS],
-		i;
-	pthread_t thread[THREADS];
+	int kernel = atoi(argv[3]);
 
 	imageLoad(&img, argv[1], kernel);
-	for(i = 0; i < THREADS; i++){
-		threadId[i] = i;
-		pthread_create(&thread[i], NULL, (void *)parallel, &threadId[i]);
-	}
-	for(i = 0; i < THREADS; i++)
-		pthread_join(thread[i], NULL);
+	
+ 	//# pragma omp parallel num_threads(THREADS)
+	parallel();
 
 	imageSave(&img, argv[2]);
 	imageFree(&img);
