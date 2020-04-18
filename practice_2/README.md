@@ -8,9 +8,18 @@
 
 ## Ejecución del programa
 
-Ejecutar el archio blur_effect con el comando:
+Compilar el programa con el comando:
 	
 	```
+	gcc -Wall -fopenmp blur_effect.c -o blur -lm
+
+	```
+
+Ejecutar el programa blur con el comando:
+	
+	```
+	./blur imgInp.jpg imgOut.jpg kernel threads
+
 	```
 	
 

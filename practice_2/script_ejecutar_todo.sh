@@ -1,6 +1,6 @@
 #! /bin/bash
 
-gcc -Wall blur_effect.c -o blur -pthread -lm
+gcc -Wall -fopenmp blur_effect.c -o blur -lm
 
 
 echo "" > resultados.txt

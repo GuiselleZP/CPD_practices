@@ -118,7 +118,7 @@ void boxBlurT(int *scl, int *tcl, int r){
 	int w = img.width,h = img.height,
 		i, j, k, y;
 
-	#pragma omp parallel for
+	#pragma omp for
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -134,7 +134,7 @@ void boxBlurH(int *scl, int *tcl, int r){
 	int w = img.width, h = img.height,
 		i, j, k, x;
 
-	#pragma omp parallel for
+	#pragma omp for
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -182,7 +182,9 @@ int main(int argc, char *argv[]){
 	imageLoad(&img, argv[1], kernel);
 	
 	#pragma omp parallel num_threads(THREADS)
-	parallel();
+	{
+		parallel();
+	}
 
 	imageSave(&img, argv[2]);
 	imageFree(&img);
