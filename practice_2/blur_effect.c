@@ -83,6 +83,7 @@ void imageLoad(Image *img, const char *fname, int kernel){
 		img->targetsRGB[i] = (int*)malloc(sizeof(int)*(img->size/CHANNELS));
 	}
 
+	i = 0;
 	for(p = img->data; p != img->data + img->size; p += img->channels, i++){
 		*(img->rgb[0] + i) = (uint8_t) *p;
 		*(img->rgb[1] + i) = (uint8_t) *(p + 1);
