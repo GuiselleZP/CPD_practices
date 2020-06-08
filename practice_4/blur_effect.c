@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <math.h>
 #include <mpi.h>
@@ -58,6 +57,7 @@ void imageFree(unsigned char *data){
 		img.info.width = 0;
 		img.info.height = 0;
 		img.info.size = 0;
+		img.info.sizeChannel = 0;
 
 		for(i = 0; i < CHANNELS; i++){
 			free(img.rgb[i]);
@@ -91,7 +91,7 @@ unsigned char *imageLoad(const char *fname, int kernel, ImageInformation *info){
 
 void imageSave(const char *fname, unsigned char *data){
 	int i,j;
-	for(i = 0, j = 0; i < (img.info.size/3); i++, j+=3){
+	for(i = 0, j = 0; i < (img.info.size/img.info.channels); i++, j+=3){
 		data[j] = *(img.rgb[0] + i);
 		data[j + 1] = *(img.rgb[1] + i);
 		data[j + 2] = *(img.rgb[2] + i);
@@ -100,7 +100,10 @@ void imageSave(const char *fname, unsigned char *data){
 }
 
 void boxesForGauss(double *sizes){
-	int k = img.info.kernel,	n = CHANNELS,i;
+	int k, n,i;
+	
+	k = img.info.kernel;
+	n = img.info.channels;
 
 	double wIdeal = sqrt((12 * k * k / n) + 1);
 	double wl = floor(wIdeal);
@@ -115,8 +118,9 @@ void boxesForGauss(double *sizes){
 
 void boxBlurT(int *scl, int *tcl, int r, int processId){
 	int initIteration,endIteration,
-		w = img.info.width,h = img.info.height,
-		i, j, k, y;
+		w ,h, i, j, k, y;
+	w = img.info.width;
+	h = img.info.height;
 
 	initIteration = (h / PROCESSES) * processId;
 	if(processId == (PROCESSES - 1))
@@ -137,8 +141,9 @@ void boxBlurT(int *scl, int *tcl, int r, int processId){
 
 void boxBlurH(int *scl, int *tcl, int r, int processId){
 	int initIteration, endIteration,
-		w = img.info.width, h = img.info.height,
-		i, j, k, x;
+		w , h, i, j, k, x;
+	w = img.info.width;
+	h = img.info.height;
 
 	initIteration = (w / PROCESSES) * processId;
 	if(processId == (PROCESSES - 1))
@@ -168,7 +173,7 @@ void boxBlur(int *scl, int *tcl, int r,int processId){
 }
 
 void gaussBlur_3(int *scl, int *tcl, int processId){
-	double *bxs = (double*)malloc(sizeof(double)*CHANNELS);
+	double *bxs = (double*)malloc(sizeof(double)*img.info.channels);
 	boxesForGauss(bxs);
 	boxBlur(scl, tcl, (int)((*(bxs)-1)/2), processId);
 	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2), processId);
@@ -178,8 +183,8 @@ void gaussBlur_3(int *scl, int *tcl, int processId){
 void mallocRGB(){
 	int i;
 	for(i = 0; i < img.info.channels; i++){
-		img.rgb[i] = (int*)malloc(sizeof(int)*(img.info.size/CHANNELS));
-		img.targetsRGB[i] = (int*)malloc(sizeof(int)*(img.info.size/CHANNELS));
+		img.rgb[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
 	}
 }
 
@@ -203,13 +208,11 @@ int main(int argc, char *argv[]){
 		tasks,
 		temp,
 		iam,
-		i,
-		j,
-		k;
+		i, j, k;
 	unsigned char *data;
 
 	MPI_Init(&argc, &argv);
-	MPI_Status status;
+	//MPI_Status status;
 	MPI_Comm_size(MPI_COMM_WORLD, &tasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &iam);
 
