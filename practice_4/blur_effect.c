@@ -28,10 +28,14 @@ typedef struct{
 	int height;
 	int kernel;
 	int channels;
+	size_t size;
+	size_t sizeChannel;
+}ImageInformation;
+
+typedef struct{
 	int *rgb[CHANNELS];
 	int *targetsRGB[CHANNELS];
-	size_t size;
-	unsigned char *data;
+	ImageInformation info;
 }Image;
 
 Image img;
@@ -50,9 +54,9 @@ void imageFree(unsigned char *data){
 		int i;
 		stbi_image_free(data);
 		data = NULL;
-		img.width = 0;
-		img.height = 0;
-		img.size = 0;
+		img.info.width = 0;
+		img.info.height = 0;
+		img.info.size = 0;
 
 		for(i = 0; i < CHANNELS; i++){
 			free(img.rgb[i]);
@@ -61,47 +65,41 @@ void imageFree(unsigned char *data){
 	}
 }
 
-unsigned char *imageLoad(const char *fname, int kernel){
+void createCopy(int **rgb, unsigned char *data){
 	unsigned char *p;
-	unsigned char *data;
 	int i = 0;
+	for(i = 0, p = data; p != data + img.info.size; p += img.info.channels, i++){
+		*(rgb[0] + i) = (uint8_t) *p;
+		*(rgb[1] + i) = (uint8_t) *(p + 1);
+		*(rgb[2] + i) = (uint8_t) *(p + 2);
+	}
+}
+
+unsigned char *imageLoad(const char *fname, int kernel, ImageInformation *info){
+	unsigned char *data;
 	
-	data = stbi_load(fname, &img.width, &img.height, &img.channels, 0);
+	data = stbi_load(fname, &info->width, &info->height, &info->channels, 0);
 	ON_ERROR_EXIT(data == NULL, "Error in stbi_load");
 
-	img.size = img.width * img.height * img.channels;
-	img.kernel = kernel;
+	info->size = info->width * info->height * info->channels;
+	info->sizeChannel = info->width * info->height;
+	info->kernel = kernel;
 
-	for(i = 0; i < CHANNELS; i++){
-		img.rgb[i] = (int*)malloc(sizeof(int)*(img.size/CHANNELS));
-		img.targetsRGB[i] = (int*)malloc(sizeof(int)*(img.size/CHANNELS));
-	}
-
-	i = 0;
-	for(p = data; p != data + img.size; p += img.channels, i++){
-		*(img.rgb[0] + i) = (uint8_t) *p;
-		*(img.rgb[1] + i) = (uint8_t) *(p + 1);
-		*(img.rgb[2] + i) = (uint8_t) *(p + 2);
-	}
 	return data;
 }
 
 void imageSave(const char *fname, unsigned char *data){
 	int i,j;
-	for(i = 0, j = 0; i < (img.size/3); i++, j+=3){
+	for(i = 0, j = 0; i < (img.info.size/3); i++, j+=3){
 		data[j] = *(img.rgb[0] + i);
 		data[j + 1] = *(img.rgb[1] + i);
 		data[j + 2] = *(img.rgb[2] + i);
-		if(i == 44831){
-			printf("i: %d j: %d - data: %d\n", i, j, data[j]);
-			printf("i: %d j: %d - data: %d\n", i, j, *(img.rgb[0]+i));
-		}
 	}
-	stbi_write_jpg(fname, img.width, img.height, img.channels, data, 100);
+	stbi_write_jpg(fname, img.info.width, img.info.height, img.info.channels, data, 100);
 }
 
 void boxesForGauss(double *sizes){
-	int k = img.kernel,	n = CHANNELS,i;
+	int k = img.info.kernel,	n = CHANNELS,i;
 
 	double wIdeal = sqrt((12 * k * k / n) + 1);
 	double wl = floor(wIdeal);
@@ -116,7 +114,7 @@ void boxesForGauss(double *sizes){
 
 void boxBlurT(int *scl, int *tcl, int r, int threadId){
 	int initIteration,endIteration,
-		w = img.width,h = img.height,
+		w = img.info.width,h = img.info.height,
 		i, j, k, y;
 
 	initIteration = (h / THREADS) * threadId;
@@ -138,7 +136,7 @@ void boxBlurT(int *scl, int *tcl, int r, int threadId){
 
 void boxBlurH(int *scl, int *tcl, int r, int threadId){
 	int initIteration, endIteration,
-		w = img.width, h = img.height,
+		w = img.info.width, h = img.info.height,
 		i, j, k, x;
 
 	initIteration = (w / THREADS) * threadId;
@@ -159,7 +157,7 @@ void boxBlurH(int *scl, int *tcl, int r, int threadId){
 }
 
 void boxBlur(int *scl, int *tcl, int r,int threadId){
-	int w = img.width, h = img.height, i;
+	int w = img.info.width, h = img.info.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
 		*(tcl + i) = aux;
@@ -176,11 +174,18 @@ void gaussBlur_3(int *scl, int *tcl, int threadId){
 	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2), threadId);
 }
 
+void mallocRGB(){
+	int i;
+	for(i = 0; i < img.info.channels; i++){
+		img.rgb[i] = (int*)malloc(sizeof(int)*(img.info.size/CHANNELS));
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*(img.info.size/CHANNELS));
+	}
+}
+
 void parallel(void *arg){
-	const Image *orig = &img;
 	int threadId = *(int *)arg,	i;
 
-    ON_ERROR_EXIT(!(orig->channels >= 3), 
+    ON_ERROR_EXIT(!(img.info.channels >= 3),
 			"The input image must have at least 3 channels.");
 	for(i = 0; i < CHANNELS; i++)
 		gaussBlur_3(img.rgb[i], img.targetsRGB[i], threadId);
@@ -188,14 +193,18 @@ void parallel(void *arg){
 
 int main(int argc, char *argv[]){
 	ON_ERROR_EXIT(argc < 5, "time ./blr imgInp.jpg imgOut.jpg kernel threads");
+
 	THREADS = atoi(argv[4]);
 	int kernel = atoi(argv[3]),
 		threadId[THREADS],
 		i;
-	pthread_t thread[THREADS];
 	unsigned char *data;
+	pthread_t thread[THREADS];
 
-	data = imageLoad(argv[1], kernel);
+	data = imageLoad(argv[1], kernel, &img.info);
+	mallocRGB();
+	createCopy(img.rgb, data);
+
 	for(i = 0; i < THREADS; i++){
 		threadId[i] = i;
 		pthread_create(&thread[i], NULL, (void *)parallel, &threadId[i]);
@@ -203,7 +212,6 @@ int main(int argc, char *argv[]){
 	for(i = 0; i < THREADS; i++)
 		pthread_join(thread[i], NULL);
 
-	printf("fs %d\n", data[0]);
 	imageSave(argv[2], data);
 	imageFree(data);
 	return 0;
