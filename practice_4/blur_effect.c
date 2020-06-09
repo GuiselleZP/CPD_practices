@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
-#include "omp.h"
+#include <mpi.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -32,6 +32,7 @@ typedef struct{
 	int height;
 	int kernel;
 	int channels;
+	int sizeChannels;
 	int *rgb[CHANNELS];
 	int *targetsRGB[CHANNELS];
 	size_t size;
@@ -40,7 +41,7 @@ typedef struct{
 }Image;
 
 Image img;
-int THREADS;
+int numprocs;
 
 int max(int num1, int num2){
     return (num1 > num2 ) ? num1 : num2;
@@ -77,6 +78,7 @@ void imageLoad(Image *img, const char *fname, int kernel){
 	img->size = img->width * img->height * img->channels;
 	img->allocation_ = STB_ALLOCATED;
 	img->kernel = kernel;
+	img->sizeChannels = img->width * img->height;
 
 	for(i = 0; i < CHANNELS; i++){
 		img->rgb[i] = (int*)malloc(sizeof(int)*(img->size/CHANNELS));
@@ -115,11 +117,30 @@ void boxesForGauss(double *sizes){
 		*(sizes + i) = (i < m ? wl : wu);
 }
 
-void boxBlurT(int *scl, int *tcl, int r){
-	int w = img.width,h = img.height,
+void boxBlurT(int *scl, int *tcl, int r, int processId){
+	int initIterationH, endIterationH, initIterationW, endIterationW,
+		w = img.width,h = img.height,
 		i, j, k, y;
 
-	#pragma omp for
+	/*
+	initIterationH = (h / numprocs) * processId;
+	if(processId == (numprocs - 1))
+		endIterationH = h;
+	else
+		endIterationH = (h / numprocs)*(processId + 1);
+
+	initIterationW = (w / numprocs) * processId;
+	if(processId == (numprocs - 1))
+		endIterationW = w;
+	else
+		endIterationW = (w / numprocs)*(processId + 1);
+
+    initIterationH = (h/numprocs) * processId;
+    endIterationH = (h/numprocs) + 1;
+
+	initIterationW = (w/numprocs) * processId;
+    endIterationW = (w/numprocs) + 1;
+	*/
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -131,11 +152,31 @@ void boxBlurT(int *scl, int *tcl, int r){
 		}
 }
 
-void boxBlurH(int *scl, int *tcl, int r){
-	int w = img.width, h = img.height,
+void boxBlurH(int *scl, int *tcl, int r, int processId){
+	int initIterationH, endIterationH, initIterationW, endIterationW,
+		w = img.width, h = img.height,
 		i, j, k, x;
 
-	#pragma omp for
+	/*
+	initIterationH = (h / numprocs) * processId;
+	if(processId == (numprocs - 1))
+		endIterationH = h;
+	else
+		endIterationH = (h / numprocs)*(processId + 1);
+
+	initIterationW = (w / numprocs) * processId;
+	if(processId == (numprocs - 1))
+		endIterationW = w;
+	else
+		endIterationW = (w / numprocs)*(processId + 1);
+
+    initIterationH = (h/numprocs) * processId;
+    endIterationH = (h/numprocs) + 1;
+
+    initIterationW = (w/numprocs) * processId;
+    endIterationW = (w/numprocs) + 1;
+	*/
+
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -147,48 +188,122 @@ void boxBlurH(int *scl, int *tcl, int r){
 		}
 }
 
-void boxBlur(int *scl, int *tcl, int r){
+void boxBlur(int *scl, int *tcl, int r,int processId){
 	int w = img.width, h = img.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
 		*(tcl + i) = aux;
 	}
-	boxBlurH(tcl, scl, r);
-	boxBlurT(scl, tcl, r);
+	boxBlurH(tcl, scl, r, processId);
+	boxBlurT(scl, tcl, r, processId);
 }
 
-void gaussBlur_3(int *scl, int *tcl){
+void gaussBlur_3(int *scl, int *tcl, int processId){
 	double *bxs = (double*)malloc(sizeof(double)*CHANNELS);
 	boxesForGauss(bxs);
-	boxBlur(scl, tcl, (int)((*(bxs)-1)/2));
-	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2));
-	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2));
+	boxBlur(scl, tcl, (int)((*(bxs)-1)/2), processId);
+	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2), processId);
+	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2), processId);
 }
 
-void parallel(){
-	const Image *orig = &img;
-	int	i;
-
-    ON_ERROR_EXIT(!(orig->allocation_ != NO_ALLOCATION && orig->channels >= 3), 
-			"The input image must have at least 3 channels.");
+void parallel(int processId){
+	int i;
 	for(i = 0; i < CHANNELS; i++)
-		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
+		gaussBlur_3(img.rgb[i], img.targetsRGB[i], processId);
 }
 
 int main(int argc, char *argv[]){
-	ON_ERROR_EXIT(argc < 5, "time ./blr imgInp.jpg imgOut.jpg kernel threads");
-	THREADS = atoi(argv[4]);
-	int kernel = atoi(argv[3]);
-
-	imageLoad(&img, argv[1], kernel);
+	ON_ERROR_EXIT(argc < 4, "time ./blr imgInp.jpg imgOut.jpg kernel");
+	int processId, arrayLength;
 	
-	#pragma omp parallel num_threads(THREADS)
-	{
-		parallel();
+	MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &processId);
+	int kernel = atoi(argv[3]);
+	//width = img.width;
+	if(processId == 0){
+		imageLoad(&img, argv[1], kernel);
+		arrayLength = img.width / (numprocs);
 	}
 
-	imageSave(&img, argv[2]);
-	imageFree(&img);
+	MPI_Bcast(&arrayLength, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&img.width, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&img.height, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&img.kernel, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(&img.sizeChannels, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+	//printf("\nprocess %d \n width %d height %d sizeChannels %i \n", processId, img.width, img.height, img.sizeChannels);
+
+	
+	if(processId != 0){
+		for(int i = 0; i < CHANNELS; i++){
+			img.rgb[i] = (int *)malloc(sizeof(int) * (img.sizeChannels));
+			img.targetsRGB[i] = (int *)malloc(sizeof(int) * (img.sizeChannels));
+			//printf("\nprocess %d \n size %ld", processId, sizeof(img.rgb[i]));
+		}
+	}
+
+	for(int i = 0; i < CHANNELS; i++){
+		MPI_Bcast(img.rgb[i], img.sizeChannels, MPI_INT, 0, MPI_COMM_WORLD);
+	}
+
+	//arrayLength = img.width / numprocs;
+
+	/*	
+	printf("\nr process %d \n %d \n", processId, *(img.rgb[0] + (arrayLength + 2)));
+	printf("\ng process %d \n %d \n", processId, *(img.rgb[1] + (arrayLength + 2)));
+	printf("\nb process %d \n %d \n", processId, *(img.rgb[2] + (arrayLength + 2)));
+	
+
+	int temp = img.width;
+	int endIteration;
+	int initIteration = (temp / numprocs) * processId;
+	if(processId == (numprocs - 1))
+		endIteration = temp;
+	else
+		endIteration = (temp / numprocs)*(processId + 1);
+*/
+	parallel(processId);
+
+	for(int i = 0; i < 3; i++){
+		//int aux[arrayLength];
+		//for(int k = 0; k < arrayLength; k++)
+		//	aux[k] = *(img.rgb[i] + (arrayLength + k));
+		MPI_Gather(img.rgb[i], arrayLength, MPI_INT, img.rgb[i], arrayLength, MPI_INT, 0, MPI_COMM_WORLD);
+	}
+	/*
+
+	for(int i = 0; i < 3; i++){
+		int aux[arrayLength];
+		for(int k = 0, j = initIteration; j < endIteration; j++, k++)
+			aux[k] = *(img.rgb[i] + j);
+		MPI_Gather(aux, arrayLength, MPI_INT, img.rgb[i], arrayLength, MPI_INT, 0, MPI_COMM_WORLD);
+	}*/
+
+	//MPI_Gather((void *)&buff2send, 1, MPI_INT, buff2recv, 1, MPI_INT, root, MPI_COMM_WORLD);
+
+	/*
+	THREADS = atoi(argv[4]);
+	int kernel = atoi(argv[3]),
+		threadId[THREADS],
+		i;
+	pthread_t thread[THREADS];
+
+	
+	for(i = 0; i < THREADS; i++){
+		threadId[i] = i;
+		pthread_create(&thread[i], NULL, (void *)parallel, &threadId[i]);
+	}
+	for(i = 0; i < THREADS; i++)
+		pthread_join(thread[i], NULL);
+	*/
+	if(processId == 0){
+		imageSave(&img, argv[2]);
+		imageFree(&img);
+	}
+
+	MPI_Finalize();
 	return 0;
 }
-// gcc -Wall -fopenmp blur_effect.c -o blur -lm
+// mpicc -Wall blur_effect.c -o blur -lm
+// mpirun -np 4 blur lobo720.jpg loboblur720.jpg 3
