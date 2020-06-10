@@ -185,22 +185,61 @@ void parallel(){
 	for(i = 0; i < CHANNELS; i++)
 		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
+/*
+void split_image(unsigned char *data, int **split, int threadId){
+	int init, end, width, height, sizeChannel, channels,
+		i, j, k, l, c;
+
+	width = img.info.width;
+	height = img.info.height;
+	sizeChannel = img.info.sizeChannel;
+	channels = img.info.channels;
+
+	init = (width / THREADS) * threadId;
+	if(threadId == (THREADS - 1))
+		end = width;
+	else
+		end = (width / THREADS)*(threadId + 1);
+
+	for(i = 0, k = 0; i < height; i ++){
+		for(j = ( channels * init ); j < (channels * end); j += channels, k ++)
+			for(l = 0; l < channels; l++)
+				*(split[l] + k) = data[j + l];
+		init += width;
+		end += width;
+	}
+}
+*/
 
 void split_image(unsigned char *data, int **split, int threadId){
 	int init, end, width, height, channels,
 		i, j, k, l, c;
 
-	width = img.info.width * PROCESSES;
-	height = img.info.height;
+	width = img.info.width;
+	height = img.info.height * PROCESSES;
 	channels = img.info.channels;
 
-	init = (width / PROCESSES) * threadId;
+	init = (height / PROCESSES) * threadId;
 	if(threadId == (PROCESSES - 1))
-		end = width;
+		end = height;
 	else
-		end = (width / PROCESSES)*(threadId + 1);
+		end = (height / PROCESSES)*(threadId + 1);
 
 	printf("c: %d w: %d h: %d ini: %d end: %d P: %d ID: %d\n", channels, width, height, init, end, PROCESSES, threadId);
+	for(i = (channels * init), k = 0; i < (channels * end); i ++){
+		for(l = 0; l < channels; l++){
+			*(split[l] + i) = data[i + l];
+		}
+	}
+
+
+	for(i = 0; i < CHANNELS; i++)
+		printf(" ID: %d data[%d] + 10 = %d\n", threadId, i, data[i + 10]);
+
+	for(i = 0; i < CHANNELS; i++)
+		printf(" ID: %d rgb[%d] + 10 = %d\n", threadId, i, *(split[i] + 10));
+
+	/*
 	for(i = 0, k = 0; i < height; i ++){
 		for(j = ( channels * init ); j < (channels * end); j += channels, k ++){
 			for(l = 0; l < channels; l++){
@@ -210,6 +249,7 @@ void split_image(unsigned char *data, int **split, int threadId){
 		init += width;
 		end += width;
 	}
+	*/
 }
 
 
@@ -270,7 +310,7 @@ int main(int argc, char *argv[]){
 		for(i = 0; i < 3; i++)
 			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
 
-		img.info.width /= PROCESSES;
+		img.info.height /= PROCESSES;
 		img.info.sizeChannel /= PROCESSES;
 		img.info.size /= PROCESSES;
 	}
