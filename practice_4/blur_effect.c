@@ -41,6 +41,9 @@ typedef struct{
 Image img;
 int PROCESSES;
 
+//delete - borrar
+int ID;
+
 int max(int num1, int num2){
     return (num1 > num2 ) ? num1 : num2;
 }
@@ -78,7 +81,7 @@ void createCopy(int **rgb, unsigned char *data){
 
 unsigned char *imageLoad(const char *fname, int kernel, ImageInformation *info){
 	unsigned char *data;
-	
+
 	data = stbi_load(fname, &info->width, &info->height, &info->channels, 0);
 	ON_ERROR_EXIT(data == NULL, "Error in stbi_load");
 
@@ -89,19 +92,19 @@ unsigned char *imageLoad(const char *fname, int kernel, ImageInformation *info){
 	return data;
 }
 
-void imageSave(const char *fname, unsigned char *data){
+void imageSave(const char *fname, unsigned char *data, int **rgb){
 	int i,j;
 	for(i = 0, j = 0; i < (img.info.size/img.info.channels); i++, j+=3){
-		data[j] = *(img.rgb[0] + i);
-		data[j + 1] = *(img.rgb[1] + i);
-		data[j + 2] = *(img.rgb[2] + i);
+		data[j] = *(rgb[0] + i);
+		data[j + 1] = *(rgb[1] + i);
+		data[j + 2] = *(rgb[2] + i);
 	}
 	stbi_write_jpg(fname, img.info.width, img.info.height, img.info.channels, data, 100);
 }
 
 void boxesForGauss(double *sizes){
 	int k, n,i;
-	
+
 	k = img.info.kernel;
 	n = img.info.channels;
 
@@ -116,19 +119,12 @@ void boxesForGauss(double *sizes){
 		*(sizes + i) = (i < m ? wl : wu);
 }
 
-void boxBlurT(int *scl, int *tcl, int r, int processId){
-	int initIteration,endIteration,
-		w ,h, i, j, k, y;
+void boxBlurT(int *scl, int *tcl, int r){
+	int w ,h, i, j, k, y;
 	w = img.info.width;
 	h = img.info.height;
 
-	initIteration = (h / PROCESSES) * processId;
-	if(processId == (PROCESSES - 1))
-		endIteration = h;
-	else
-		endIteration = (h / PROCESSES)*(processId + 1);
-	
-	for(i = initIteration; i < endIteration; i++)
+	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
 			for(k = (i - r); k < (i + r + 1); k++){
@@ -139,20 +135,13 @@ void boxBlurT(int *scl, int *tcl, int r, int processId){
 		}
 }
 
-void boxBlurH(int *scl, int *tcl, int r, int processId){
-	int initIteration, endIteration,
-		w , h, i, j, k, x;
+void boxBlurH(int *scl, int *tcl, int r){
+	int w , h, i, j, k, x;
 	w = img.info.width;
 	h = img.info.height;
 
-	initIteration = (w / PROCESSES) * processId;
-	if(processId == (PROCESSES - 1))
-		endIteration = w;
-	else
-		endIteration = (w / PROCESSES)*(processId + 1);
-		
 	for(i = 0; i < h; i++)
-		for(j = initIteration; j < endIteration; j++){
+		for(j = 0; j < w; j++){
 			int val = 0;
 			for(k = (j - r); k < (j + r + 1); k ++){
 				x = min(w - 1, max(0, k));
@@ -162,40 +151,67 @@ void boxBlurH(int *scl, int *tcl, int r, int processId){
 		}
 }
 
-void boxBlur(int *scl, int *tcl, int r,int processId){
+void boxBlur(int *scl, int *tcl, int r){
 	int w = img.info.width, h = img.info.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
 		*(tcl + i) = aux;
 	}
-	boxBlurH(tcl, scl, r, processId);
-	boxBlurT(scl, tcl, r, processId);
+	boxBlurH(tcl, scl, r);
+	boxBlurT(scl, tcl, r);
 }
 
-void gaussBlur_3(int *scl, int *tcl, int processId){
+void gaussBlur_3(int *scl, int *tcl){
 	double *bxs = (double*)malloc(sizeof(double)*img.info.channels);
 	boxesForGauss(bxs);
-	boxBlur(scl, tcl, (int)((*(bxs)-1)/2), processId);
-	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2), processId);
-	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2), processId);
+	boxBlur(scl, tcl, (int)((*(bxs)-1)/2));
+	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2));
+	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2));
 }
 
 void mallocRGB(){
-	int i;
+	int i,
+		auxSize = img.info.sizeChannel;
 	for(i = 0; i < img.info.channels; i++){
-		img.rgb[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
-		img.targetsRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
+		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
 	}
 }
 
-void parallel(int processId){
+void parallel(){
 	int i;
-
     ON_ERROR_EXIT(!(img.info.channels >= 3),
 			"The input image must have at least 3 channels.");
 	for(i = 0; i < CHANNELS; i++)
-		gaussBlur_3(img.rgb[i], img.targetsRGB[i], processId);
+		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
+
+void split_image(unsigned char *data, int **split, int threadId){
+	int init, end, width, height, channels,
+		i, j, k, l, c;
+
+	width = img.info.width * PROCESSES;
+	height = img.info.height;
+	channels = img.info.channels;
+
+	init = (width / PROCESSES) * threadId;
+	if(threadId == (PROCESSES - 1))
+		end = width;
+	else
+		end = (width / PROCESSES)*(threadId + 1);
+
+	printf("c: %d w: %d h: %d ini: %d end: %d P: %d ID: %d\n", channels, width, height, init, end, PROCESSES, threadId);
+	for(i = 0, k = 0; i < height; i ++){
+		for(j = ( channels * init ); j < (channels * end); j += channels, k ++){
+			for(l = 0; l < channels; l++){
+				*(split[l] + k) = data[j + l];
+			}
+		}
+		init += width;
+		end += width;
+	}
+}
+
 
 int main(int argc, char *argv[]){
 	ON_ERROR_EXIT(argc < 4, "time ./blr imgInp.jpg imgOut.jpg kernel");
@@ -212,7 +228,7 @@ int main(int argc, char *argv[]){
 	unsigned char *data;
 
 	MPI_Init(&argc, &argv);
-	//MPI_Status status;
+	MPI_Status status;
 	MPI_Comm_size(MPI_COMM_WORLD, &tasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &iam);
 
@@ -239,71 +255,63 @@ int main(int argc, char *argv[]){
 	offsets[3] = offsetof(ImageInformation, channels);
 	offsets[4] = offsetof(ImageInformation, size);
 	offsets[5] = offsetof(ImageInformation, sizeChannel);
-	
+
 	MPI_Type_create_struct(blocksCount, blocksLength, offsets, types, &MPI_INFO);
 	MPI_Type_commit(&MPI_INFO);
 
 	// blur algorithm
-		
-	if(iam == 0)
+
+	int *globalRGB[CHANNELS];
+
+	ID = iam;
+	if(iam == 0){
 		data = imageLoad(argv[1], kernel, &img.info);
+
+		for(i = 0; i < 3; i++)
+			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
+
+		img.info.width /= PROCESSES;
+		img.info.sizeChannel /= PROCESSES;
+		img.info.size /= PROCESSES;
+	}
 
 	MPI_Bcast(&img.info, 1, MPI_INFO, root, MPI_COMM_WORLD);
 
-	if(iam != 0)
-		data = malloc(sizeof(int)*img.info.size);
-	
+	int *tempRGB[3];
+	for(i = 0; i < CHANNELS; i++)
+		tempRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
+
+
 	mallocRGB();
-	
-	if(iam == 0)
-		createCopy(img.rgb, data);
 
-	for(i = 0; i < img.info.channels; i++)
-		MPI_Bcast(img.rgb[i], img.info.sizeChannel, MPI_INT, root, MPI_COMM_WORLD);
+	int MSG_LENGHT = img.info.sizeChannel/PROCESSES;
 
-
-	temp = img.info.width;
-	initIteration = (temp / tasks) * iam;
-	if(iam == (tasks - 1))
-		endIteration = temp;
-	else
-		endIteration = (temp / tasks)*(iam + 1);
-	arrayLength = temp / tasks;
-	
-
-	/*
-	printf("tasks: %d, iam: %d, temp: %d, length: %d, ini: %d, end:%d\n",
-			tasks, iam, temp, arrayLength, initIteration, endIteration);
-
-	printf("\n");
-	for(i = 0; i < tasks; i++)
-		printf("PRE- ID: %d, *(img.rgb[0] + %d) : %d\n",
-				iam, (i*arrayLength) + 2,  *(img.rgb[0] + (i*arrayLength + 2)));
-	printf("\n");
-	*/
-
-	parallel(iam);
-
-	for(i = 0; i < img.info.channels; i++){
-		int aux[arrayLength];
-		for(k = 0, j = initIteration; j < endIteration; j++, k++)
-			aux[k] = *(img.rgb[i] + j);
-		MPI_Gather(aux, arrayLength, MPI_INT, img.rgb[i], arrayLength, MPI_INT, root, MPI_COMM_WORLD);
-	}
-
-	/*
-	printf("\n");
-	for(i = 0; i < tasks; i++)
-		printf("POST - ID: %d, *(img.rgb[0] + %d) : %d\n",
-				iam, (i*arrayLength) + 2,  *(img.rgb[0] + (i*arrayLength + 2)));
-	printf("\n");
-	*/
 
 	if(iam == 0){
-		imageSave(argv[2], data);
+		split_image(data, img.rgb, atoi(argv[4]));
+		for(i = 1; i < tasks; i++){
+			split_image(data, tempRGB, i);
+
+			MPI_Send(tempRGB[0], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
+			MPI_Send(tempRGB[1], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
+			MPI_Send(tempRGB[2], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
+		}
+	}else{
+		MPI_Recv(img.rgb[0], MSG_LENGHT, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+		MPI_Recv(img.rgb[1], MSG_LENGHT, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+		MPI_Recv(img.rgb[2], MSG_LENGHT, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+	}
+
+	for(i = 0; i < CHANNELS; i++)
+		printf(" PREEE ID: %d rgb[%d] + 10 = %d\n", iam, i, *(img.rgb[i] + 10));
+
+	parallel();
+
+	if(iam == 0){
+		imageSave(argv[2], data, img.rgb);
 		imageFree(data);
 	}
-	MPI_Finalize();	
+	MPI_Finalize();
 	return 0;
 }
 // mpicc -Wall blur_effect.c -o blur -lm
