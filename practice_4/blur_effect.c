@@ -30,8 +30,6 @@ typedef struct{
 	int channels;
 	int size;
 	int sizeChannel;
-	int h2;
-	int sc2;
 }ImageInformation;
 
 typedef struct{
@@ -43,9 +41,6 @@ typedef struct{
 Image img;
 int PROCESSES;
 
-//delete - borrar
-int ID;
-
 int max(int num1, int num2){
     return (num1 > num2 ) ? num1 : num2;
 }
@@ -56,18 +51,12 @@ int min(int num1, int num2) {
 
 void imageFree(unsigned char *data){
 	if(data != NULL){
-		int i;
 		stbi_image_free(data);
 		data = NULL;
 		img.info.width = 0;
 		img.info.height = 0;
 		img.info.size = 0;
 		img.info.sizeChannel = 0;
-
-		for(i = 0; i < CHANNELS; i++){
-			free(img.rgb[i]);
-			free(img.targetsRGB[i]);
-		}
 	}
 }
 
@@ -101,7 +90,7 @@ void imageSave(const char *fname, unsigned char *data, int **rgb){
 		data[j + 1] = *(rgb[1] + i);
 		data[j + 2] = *(rgb[2] + i);
 	}
-	stbi_write_jpg(fname, img.info.width, img.info.h2, img.info.channels, data, 100);
+	stbi_write_jpg(fname, img.info.width, img.info.height, img.info.channels, data, 100);
 }
 
 void boxesForGauss(double *sizes){
@@ -171,24 +160,9 @@ void gaussBlur_3(int *scl, int *tcl){
 	boxBlur(scl, tcl, (int)((*(bxs+2)-1)/2));
 }
 
-void mallocRGB(int iam){
-	int i, auxSize;
-
-	if(iam == (PROCESSES - 1))
-		auxSize = img.info.sc2 - (img.info.sizeChannel * (PROCESSES -1));
-	else
-		auxSize = img.info.sizeChannel;
-
-	for(i = 0; i < img.info.channels; i++){
-		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
-		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
-	}
-}
-
 void parallel(){
 	int i;
-    ON_ERROR_EXIT(!(img.info.channels >= 3),
-			"The input image must have at least 3 channels.");
+    ON_ERROR_EXIT(img.info.channels < 3,"The input image must have at least 3 channels.");
 	for(i = 0; i < CHANNELS; i++)
 		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
@@ -196,22 +170,33 @@ void parallel(){
 void split_image(unsigned char *data, int **split, int threadId){
 	int init, end,channels,
 		i, j, k;
-
 	channels = img.info.channels;
 
 	init = img.info.sizeChannel * threadId;
-	if(threadId == (PROCESSES - 1))
-		end = img.info.sc2;
-	else
-		end = img.info.sizeChannel * (threadId + 1);
+	end = img.info.sizeChannel * (threadId + 1);
 
-	for(i = (channels * init), j = 0; i < (channels * end); i += channels, j++){
-		for(k = 0; k < channels; k++){
+	for(i = (channels * init), j = 0; i < (channels * end); i += channels, j++)
+		for(k = 0; k < channels; k++)
 			*(split[k] + j) = data[i + k];
-		}
+}
+
+void mallocRGB(int iam){
+	int i, auxSize;
+
+	auxSize = img.info.sizeChannel;
+
+	for(i = 0; i < img.info.channels; i++){
+		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
 	}
 }
 
+
+void freeRGB(int **rgb){
+	int i;
+	for(i = 0; i < CHANNELS; i++)
+		free(rgb[i]);
+}
 
 int main(int argc, char *argv[]){
 	ON_ERROR_EXIT(argc < 4, "time ./blr imgInp.jpg imgOut.jpg kernel");
@@ -232,7 +217,7 @@ int main(int argc, char *argv[]){
 
 	// Create MPI structure
 
-	int blocksCount = 8;
+	int blocksCount = 6;
 	int blocksLength[blocksCount];
 
 	MPI_Datatype types[blocksCount];
@@ -251,8 +236,6 @@ int main(int argc, char *argv[]){
 	offsets[3] = offsetof(ImageInformation, channels);
 	offsets[4] = offsetof(ImageInformation, size);
 	offsets[5] = offsetof(ImageInformation, sizeChannel);
-	offsets[6] = offsetof(ImageInformation, h2);
-	offsets[7] = offsetof(ImageInformation, sc2);
 
 	MPI_Type_create_struct(blocksCount, blocksLength, offsets, types, &MPI_INFO);
 	MPI_Type_commit(&MPI_INFO);
@@ -261,64 +244,53 @@ int main(int argc, char *argv[]){
 
 	int *globalRGB[CHANNELS];
 
-	ID = iam;
 	if(iam == 0){
 		data = imageLoad(argv[1], kernel, &img.info);
-
-		for(i = 0; i < 3; i++)
-			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
-
-		img.info.h2 = img.info.height;
-		img.info.sc2 = img.info.sizeChannel;
 		img.info.height /= PROCESSES;
 		img.info.sizeChannel = img.info.height * img.info.width;
-		img.info.size = img.info.height * img.info.channels;
+		img.info.size = img.info.sizeChannel * img.info.channels;
+
+		for(i = 0; i < 3; i++)
+			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel*PROCESSES);
 	}
 
 	MPI_Bcast(&img.info, 1, MPI_INFO, root, MPI_COMM_WORLD);
-
-	int *tempRGB[3];
-	for(i = 0; i < CHANNELS; i++)
-		tempRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel);
 	
 	mallocRGB(iam);
 
 	int MSG_LENGHT = img.info.sizeChannel;
 
 	if(iam == 0){
-		split_image(data, img.rgb, iam);
 		for(i = 1; i < tasks; i++){
-			split_image(data, tempRGB, i);
+			split_image(data, img.rgb, i);
 
 			for(j = 0; j < img.info.channels; j ++)
-				MPI_Send(tempRGB[j], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
+				MPI_Send(img.rgb[j], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
 		}
+		split_image(data, img.rgb, iam);
 	}else{
 		for(i = 0; i < img.info.channels; i++)
 			MPI_Recv(img.rgb[i], MSG_LENGHT, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
 	}
 
 	parallel();
-
-	/*
-	if(iam == (PROCESSES - 1))
-		MSG_LENGHT = img.info.sc2 - (img.info.sizeChannel * (PROCESSES -1));
-	else
-		MSG_LENGHT = img.info.width * img.info.height;
-	*/
-
+	
 	MSG_LENGHT = img.info.width * img.info.height;
+	int arr[MSG_LENGHT];
 	for(i = 0; i < img.info.channels; i++){
-		int arr[MSG_LENGHT];
 		for(j = 0; j < MSG_LENGHT; j++)
 			arr[j] = *(img.rgb[i] + j);
 		MPI_Gather(arr, MSG_LENGHT, MPI_INT, globalRGB[i], MSG_LENGHT, MPI_INT, 0, MPI_COMM_WORLD);
 	}
 
 	if(iam == 0){
+		img.info.height *= PROCESSES;
 		imageSave(argv[2], data, globalRGB);
 		imageFree(data);
+		freeRGB(globalRGB);
 	}
+	freeRGB(img.rgb);
+	freeRGB(img.targetsRGB);
 	MPI_Finalize();
 	return 0;
 }
