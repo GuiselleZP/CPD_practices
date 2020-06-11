@@ -49,6 +49,35 @@ int min(int num1, int num2) {
     return (num1 > num2 ) ? num2 : num1;
 }
 
+void split_image(unsigned char *data, int **split, int threadId){
+	int init, end,channels,
+		i, j, k;
+	channels = img.info.channels;
+
+	init = img.info.sizeChannel * threadId;
+	end = img.info.sizeChannel * (threadId + 1);
+
+	for(i = (channels * init), j = 0; i < (channels * end); i += channels, j++)
+		for(k = 0; k < channels; k++)
+			*(split[k] + j) = data[i + k];
+}
+
+void mallocRGB(int iam){
+	int i, auxSize;
+	auxSize = img.info.sizeChannel;
+
+	for(i = 0; i < img.info.channels; i++){
+		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
+	}
+}
+
+void freeRGB(int **rgb){
+	int i;
+	for(i = 0; i < CHANNELS; i++)
+		free(rgb[i]);
+}
+
 void imageFree(unsigned char *data){
 	if(data != NULL){
 		stbi_image_free(data);
@@ -167,37 +196,6 @@ void parallel(){
 		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
 
-void split_image(unsigned char *data, int **split, int threadId){
-	int init, end,channels,
-		i, j, k;
-	channels = img.info.channels;
-
-	init = img.info.sizeChannel * threadId;
-	end = img.info.sizeChannel * (threadId + 1);
-
-	for(i = (channels * init), j = 0; i < (channels * end); i += channels, j++)
-		for(k = 0; k < channels; k++)
-			*(split[k] + j) = data[i + k];
-}
-
-void mallocRGB(int iam){
-	int i, auxSize;
-
-	auxSize = img.info.sizeChannel;
-
-	for(i = 0; i < img.info.channels; i++){
-		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
-		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
-	}
-}
-
-
-void freeRGB(int **rgb){
-	int i;
-	for(i = 0; i < CHANNELS; i++)
-		free(rgb[i]);
-}
-
 int main(int argc, char *argv[]){
 	ON_ERROR_EXIT(argc < 4, "time ./blr imgInp.jpg imgOut.jpg kernel");
 
@@ -215,33 +213,6 @@ int main(int argc, char *argv[]){
 
 	PROCESSES = tasks;
 
-	// Create MPI structure
-
-	int blocksCount = 6;
-	int blocksLength[blocksCount];
-
-	MPI_Datatype types[blocksCount];
-	MPI_Datatype MPI_INFO;
-
-	for(i = 0; i < blocksCount; i++){
-		blocksLength[i] = 1;
-		types[i] = MPI_INT;
-	}
-
-	MPI_Aint offsets[blocksCount];
-
-	offsets[0] = offsetof(ImageInformation, width);
-	offsets[1] = offsetof(ImageInformation, height);
-	offsets[2] = offsetof(ImageInformation, kernel);
-	offsets[3] = offsetof(ImageInformation, channels);
-	offsets[4] = offsetof(ImageInformation, size);
-	offsets[5] = offsetof(ImageInformation, sizeChannel);
-
-	MPI_Type_create_struct(blocksCount, blocksLength, offsets, types, &MPI_INFO);
-	MPI_Type_commit(&MPI_INFO);
-
-	// blur algorithm
-
 	int *globalRGB[CHANNELS];
 
 	if(iam == 0){
@@ -254,8 +225,13 @@ int main(int argc, char *argv[]){
 			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel*PROCESSES);
 	}
 
-	MPI_Bcast(&img.info, 1, MPI_INFO, root, MPI_COMM_WORLD);
-	
+	MPI_Bcast(&img.info.width, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.height, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.kernel, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.channels, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.size, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.sizeChannel, 1, MPI_INT, root, MPI_COMM_WORLD);
+
 	mallocRGB(iam);
 
 	int MSG_LENGHT = img.info.sizeChannel;
