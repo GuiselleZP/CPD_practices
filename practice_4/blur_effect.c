@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
-#include "omp.h"
+#include <mpi.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -23,24 +23,23 @@ do { \
     } \
 } while(0)
 
-enum allocation_type{
-	NO_ALLOCATION, SELF_ALLOCATED, STB_ALLOCATED
-};
-
 typedef struct{
 	int width;
 	int height;
 	int kernel;
 	int channels;
+	int size;
+	int sizeChannel;
+}ImageInformation;
+
+typedef struct{
 	int *rgb[CHANNELS];
 	int *targetsRGB[CHANNELS];
-	size_t size;
-	uint8_t *data;
-	enum allocation_type allocation_;
+	ImageInformation info;
 }Image;
 
 Image img;
-int THREADS;
+int PROCESSES;
 
 int max(int num1, int num2){
     return (num1 > num2 ) ? num1 : num2;
@@ -50,59 +49,84 @@ int min(int num1, int num2) {
     return (num1 > num2 ) ? num2 : num1;
 }
 
-void imageFree(Image *img){
-	if(img->allocation_ != NO_ALLOCATION && img->data != NULL){
-		int i;
-		stbi_image_free(img->data);
-		img->data = NULL;
-		img->width = 0;
-		img->height = 0;
-		img->size = 0;
-		img->allocation_ = NO_ALLOCATION;
+void split_image(unsigned char *data, int **split, int threadId){
+	int init, end,channels,
+		i, j, k;
+	channels = img.info.channels;
 
-		for(i = 0; i < CHANNELS; i++){
-			free(img->rgb[i]);
-			free(img->targetsRGB[i]);
-		}
+	init = img.info.sizeChannel * threadId;
+	end = img.info.sizeChannel * (threadId + 1);
+
+	for(i = (channels * init), j = 0; i < (channels * end); i += channels, j++)
+		for(k = 0; k < channels; k++)
+			*(split[k] + j) = data[i + k];
+}
+
+void mallocRGB(int iam){
+	int i, auxSize;
+	auxSize = img.info.sizeChannel;
+
+	for(i = 0; i < img.info.channels; i++){
+		img.rgb[i] = (int*)malloc(sizeof(int)*auxSize);
+		img.targetsRGB[i] = (int*)malloc(sizeof(int)*auxSize);
 	}
 }
 
-void imageLoad(Image *img, const char *fname, int kernel){
+void freeRGB(int **rgb){
+	int i;
+	for(i = 0; i < CHANNELS; i++)
+		free(rgb[i]);
+}
+
+void imageFree(unsigned char *data){
+	if(data != NULL){
+		stbi_image_free(data);
+		data = NULL;
+		img.info.width = 0;
+		img.info.height = 0;
+		img.info.size = 0;
+		img.info.sizeChannel = 0;
+	}
+}
+
+void createCopy(int **rgb, unsigned char *data){
 	unsigned char *p;
 	int i = 0;
-	
-	img->data = stbi_load(fname, &img->width, &img->height, &img->channels, 0);
-	ON_ERROR_EXIT(img->data == NULL, "Error in stbi_load");
-
-	img->size = img->width * img->height * img->channels;
-	img->allocation_ = STB_ALLOCATED;
-	img->kernel = kernel;
-
-	for(i = 0; i < CHANNELS; i++){
-		img->rgb[i] = (int*)malloc(sizeof(int)*(img->size/CHANNELS));
-		img->targetsRGB[i] = (int*)malloc(sizeof(int)*(img->size/CHANNELS));
-	}
-
-	i = 0;
-	for(p = img->data; p != img->data + img->size; p += img->channels, i++){
-		*(img->rgb[0] + i) = (uint8_t) *p;
-		*(img->rgb[1] + i) = (uint8_t) *(p + 1);
-		*(img->rgb[2] + i) = (uint8_t) *(p + 2);
+	for(i = 0, p = data; p != data + img.info.size; p += img.info.channels, i++){
+		*(rgb[0] + i) = (uint8_t) *p;
+		*(rgb[1] + i) = (uint8_t) *(p + 1);
+		*(rgb[2] + i) = (uint8_t) *(p + 2);
 	}
 }
 
-void imageSave(const Image *img, const char *fname){
+unsigned char *imageLoad(const char *fname, int kernel, ImageInformation *info){
+	unsigned char *data;
+
+	data = stbi_load(fname, &info->width, &info->height, &info->channels, 0);
+	ON_ERROR_EXIT(data == NULL, "Error in stbi_load");
+
+	info->size = info->width * info->height * info->channels;
+	info->sizeChannel = info->width * info->height;
+	info->kernel = kernel;
+
+	return data;
+}
+
+void imageSave(const char *fname, unsigned char *data, int **rgb){
 	int i,j;
-	for(i = 0, j = 0; i < (img->size/3); i++, j+=3){
-		img->data[j] = *(img->rgb[0] + i);
-		img->data[j + 1] = *(img->rgb[1] + i);
-		img->data[j + 2] = *(img->rgb[2] + i);
+	for(i = 0, j = 0; i < (img.info.sizeChannel * PROCESSES); i++, j+=3){
+		data[j] = *(rgb[0] + i);
+		data[j + 1] = *(rgb[1] + i);
+		data[j + 2] = *(rgb[2] + i);
 	}
-	stbi_write_jpg(fname, img->width, img->height, img->channels, img->data, 100);
+	stbi_write_jpg(fname, img.info.width, img.info.height, img.info.channels, data, 100);
 }
 
 void boxesForGauss(double *sizes){
-	int k = img.kernel,	n = CHANNELS,i;
+	int k, n,i;
+
+	k = img.info.kernel;
+	n = img.info.channels;
 
 	double wIdeal = sqrt((12 * k * k / n) + 1);
 	double wl = floor(wIdeal);
@@ -116,10 +140,10 @@ void boxesForGauss(double *sizes){
 }
 
 void boxBlurT(int *scl, int *tcl, int r){
-	int w = img.width,h = img.height,
-		i, j, k, y;
+	int w ,h, i, j, k, y;
+	w = img.info.width;
+	h = img.info.height;
 
-	#pragma omp for
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -132,10 +156,10 @@ void boxBlurT(int *scl, int *tcl, int r){
 }
 
 void boxBlurH(int *scl, int *tcl, int r){
-	int w = img.width, h = img.height,
-		i, j, k, x;
+	int w , h, i, j, k, x;
+	w = img.info.width;
+	h = img.info.height;
 
-	#pragma omp for
 	for(i = 0; i < h; i++)
 		for(j = 0; j < w; j++){
 			int val = 0;
@@ -148,7 +172,7 @@ void boxBlurH(int *scl, int *tcl, int r){
 }
 
 void boxBlur(int *scl, int *tcl, int r){
-	int w = img.width, h = img.height, i;
+	int w = img.info.width, h = img.info.height, i;
 	for(i = 0; i < (w*h); i++){
 		int aux = *(scl + i);
 		*(tcl + i) = aux;
@@ -158,7 +182,7 @@ void boxBlur(int *scl, int *tcl, int r){
 }
 
 void gaussBlur_3(int *scl, int *tcl){
-	double *bxs = (double*)malloc(sizeof(double)*CHANNELS);
+	double *bxs = (double*)malloc(sizeof(double)*img.info.channels);
 	boxesForGauss(bxs);
 	boxBlur(scl, tcl, (int)((*(bxs)-1)/2));
 	boxBlur(tcl, scl, (int)((*(bxs+1)-1)/2));
@@ -166,29 +190,85 @@ void gaussBlur_3(int *scl, int *tcl){
 }
 
 void parallel(){
-	const Image *orig = &img;
-	int	i;
-
-    ON_ERROR_EXIT(!(orig->allocation_ != NO_ALLOCATION && orig->channels >= 3), 
-			"The input image must have at least 3 channels.");
+	int i;
+    ON_ERROR_EXIT(img.info.channels < 3,"The input image must have at least 3 channels.");
 	for(i = 0; i < CHANNELS; i++)
 		gaussBlur_3(img.rgb[i], img.targetsRGB[i]);
 }
 
 int main(int argc, char *argv[]){
-	ON_ERROR_EXIT(argc < 5, "time ./blr imgInp.jpg imgOut.jpg kernel threads");
-	THREADS = atoi(argv[4]);
-	int kernel = atoi(argv[3]);
+	ON_ERROR_EXIT(argc < 4, "time ./blr imgInp.jpg imgOut.jpg kernel");
 
-	imageLoad(&img, argv[1], kernel);
-	
-	#pragma omp parallel num_threads(THREADS)
-	{
-		parallel();
+	int kernel = atoi(argv[3]),
+		root = 0,
+		tasks,
+		iam,
+		i, j;
+	unsigned char *data;
+
+	MPI_Init(&argc, &argv);
+	MPI_Status status;
+	MPI_Comm_size(MPI_COMM_WORLD, &tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &iam);
+
+	PROCESSES = tasks;
+
+	int *globalRGB[CHANNELS];
+
+	if(iam == 0){
+		data = imageLoad(argv[1], kernel, &img.info);
+		img.info.height /= PROCESSES;
+		img.info.sizeChannel = img.info.height * img.info.width;
+		img.info.size = img.info.sizeChannel * img.info.channels;
+
+		for(i = 0; i < 3; i++)
+			globalRGB[i] = (int*)malloc(sizeof(int)*img.info.sizeChannel*PROCESSES);
 	}
 
-	imageSave(&img, argv[2]);
-	imageFree(&img);
+	MPI_Bcast(&img.info.width, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.height, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.kernel, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.channels, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.size, 1, MPI_INT, root, MPI_COMM_WORLD);
+	MPI_Bcast(&img.info.sizeChannel, 1, MPI_INT, root, MPI_COMM_WORLD);
+
+	mallocRGB(iam);
+
+	int MSG_LENGHT = img.info.sizeChannel;
+
+	if(iam == 0){
+		for(i = 1; i < tasks; i++){
+			split_image(data, img.rgb, i);
+
+			for(j = 0; j < img.info.channels; j ++)
+				MPI_Send(img.rgb[j], MSG_LENGHT, MPI_INT, i, 1, MPI_COMM_WORLD);
+		}
+		split_image(data, img.rgb, iam);
+	}else{
+		for(i = 0; i < img.info.channels; i++)
+			MPI_Recv(img.rgb[i], MSG_LENGHT, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+	}
+
+	parallel();
+	
+	MSG_LENGHT = img.info.width * img.info.height;
+	int arr[MSG_LENGHT];
+	for(i = 0; i < img.info.channels; i++){
+		for(j = 0; j < MSG_LENGHT; j++)
+			arr[j] = *(img.rgb[i] + j);
+		MPI_Gather(arr, MSG_LENGHT, MPI_INT, globalRGB[i], MSG_LENGHT, MPI_INT, 0, MPI_COMM_WORLD);
+	}
+
+	if(iam == 0){
+		img.info.height *= PROCESSES;
+		imageSave(argv[2], data, globalRGB);
+		imageFree(data);
+		freeRGB(globalRGB);
+	}
+	freeRGB(img.rgb);
+	freeRGB(img.targetsRGB);
+	MPI_Finalize();
 	return 0;
 }
-// gcc -Wall -fopenmp blur_effect.c -o blur -lm
+// mpicc -Wall blur_effect.c -o blur -lm
+// mpirun -np 2 blur lobo720.jpg out.jpg 15
